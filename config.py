@@ -5,6 +5,20 @@ load_dotenv()
 
 # API Configuration
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs")
+TTS_API_KEY = os.getenv("TTS_API_KEY", ELEVENLABS_API_KEY)
+TTS_BASE_URL = os.getenv("TTS_BASE_URL", "https://api.elevenlabs.io/v1")
+
+# Audio-to-SRT (ASR) Configuration
+ASR_PROVIDER = os.getenv("ASR_PROVIDER", "openai_compatible")
+ASR_API_KEY = os.getenv("ASR_API_KEY", TTS_API_KEY)
+ASR_BASE_URL = os.getenv("ASR_BASE_URL", "https://api.openai.com/v1")
+ASR_MODEL = os.getenv("ASR_MODEL", "whisper-1")
+ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "")
+ASR_CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "300"))
+ASR_FALLBACK_TO_ALIGNMENT = os.getenv("ASR_FALLBACK_TO_ALIGNMENT", "true").lower() in {"1", "true", "yes", "y", "on"}
+ASR_LOCAL_DEVICE = os.getenv("ASR_LOCAL_DEVICE", "cpu")
+
 BIBLE_API_BASE_URL = "https://bible-api.com/"
 
 # Video Pack Configuration
