@@ -15,7 +15,8 @@ from tkinter import filedialog
 from config import (
     TARGET_DURATION_SECONDS, 
     WPM_ESTIMATE, 
-    BASE_OUTPUT_DIR
+    BASE_OUTPUT_DIR,
+    ELEVENLABS_API_KEY
 )
 from modules.processor import generate_video_pack
 from modules.voice_gen import generate_speech_with_timestamps, create_srt_from_alignment, save_srt_file
@@ -131,9 +132,36 @@ with st.sidebar:
     st.image("https://img.icons8.com/isometric/512/bible.png", width=128)
     st.title("Settings")
     
-    api_key = st.text_input("ElevenLabs API Key", type="password", value=ELEVENLABS_API_KEY, help="Required for audio generation")
-    voice_id = st.text_input("Voice ID (James/Daniel)", value="onwK4R9RrjmqSoxS88ve")
-    model_id = st.selectbox("Model", ["eleven_multilingual_v2", "eleven_turbo_v2_5", "eleven_flash_v2"], index=0)
+    api_key = st.text_input("ElevenLabs API Key", type="password", value=ELEVENLABS_API_KEY, help="Required for audio generation").strip()
+    
+    # Dynamic Voice/Model Loading from ElevenLabs
+    voices = []
+    models = []
+    if api_key:
+        with st.spinner("Syncing your ElevenLabs account..."):
+            from modules.voice_gen import get_voices, get_models
+            voices = get_voices(api_key)
+            models = get_models(api_key)
+            
+    if voices:
+        voice_labels = [f"🗣️ {v['name']}" for v in voices]
+        selected_voice_label = st.selectbox("Select Voice", voice_labels, index=0)
+        voice_id = voices[voice_labels.index(selected_voice_label)]["id"]
+    else:
+        voice_id = st.text_input("Voice ID (Manual)", value="TxGEqnSAs9dnLURhk9Wb")
+        
+    if models:
+        model_labels = [f"🤖 {m['name']}" for m in models]
+        # Prefer Turbo/Flash models for speed and lower credit cost
+        default_idx = 0
+        for i, m in enumerate(models):
+            if "flash" in m['id'].lower() or "turbo" in m['id'].lower():
+                default_idx = i
+                break
+        selected_model_label = st.selectbox("Select Model", model_labels, index=default_idx)
+        model_id = models[model_labels.index(selected_model_label)]["id"]
+    else:
+        model_id = st.selectbox("Model (Manual)", ["eleven_multilingual_v2", "eleven_turbo_v2_5", "eleven_flash_v2_5"], index=0)
     
     output_dir = st.text_input("Output Directory", value=st.session_state.get('output_dir', BASE_OUTPUT_DIR), help="Folder where video packs will be saved")
     target_len = st.number_input("Target Duration (Seconds)", value=TARGET_DURATION_SECONDS)
@@ -194,7 +222,7 @@ if gen_full or gen_demo:
             with open(text_path, "r", encoding="utf-8") as tf:
                 txt = tf.read()
                 
-            audio_bytes, alignment = generate_speech_with_timestamps(txt, voice_id=voice_id, model_id=model_id)
+            audio_bytes, alignment = generate_speech_with_timestamps(txt, api_key=api_key, voice_id=voice_id, model_id=model_id)
             
             # Save MP3
             audio_filename = ch["file"].replace(".txt", ".mp3")
@@ -258,33 +286,34 @@ if os.path.exists(output_dir):
                             if not api_key:
                                 st.error("Please enter your ElevenLabs API Key in the sidebar.")
                             else:
-                                with st.status(f"Processing Demo for {p}..."):
-                                    audio_dir = os.path.join(output_dir, p, "audio")
-                                    os.makedirs(audio_dir, exist_ok=True)
-                                    # Pick first 2 chapters from metadata
-                                    demo_chapters = meta["chapters"][:2]
+                                demo_status = st.empty()
+                                demo_status.info(f"Processing Demo for {p}...")
+                                audio_dir = os.path.join(output_dir, p, "audio")
+                                os.makedirs(audio_dir, exist_ok=True)
+                                # Pick first 2 chapters from metadata
+                                demo_chapters = meta["chapters"][:2]
+                                
+                                for i, ch in enumerate(demo_chapters):
+                                    demo_status.write(f"🎙️ Generating: {ch['book']} {ch['chapter']}")
+                                    text_path = os.path.join(output_dir, p, "text", ch["file"])
+                                    with open(text_path, "r", encoding="utf-8") as tf:
+                                        txt = tf.read()
+                                        
+                                    # Use voice_gen module
+                                    a_bytes, align = generate_speech_with_timestamps(txt, api_key=api_key, voice_id=voice_id, model_id=model_id)
                                     
-                                    for i, ch in enumerate(demo_chapters):
-                                        st.write(f"🎙️ Generating: {ch['book']} {ch['chapter']}")
-                                        text_path = os.path.join(output_dir, p, "text", ch["file"])
-                                        with open(text_path, "r", encoding="utf-8") as tf:
-                                            txt = tf.read()
-                                            
-                                        # Use voice_gen module
-                                        a_bytes, align = generate_speech_with_timestamps(txt, voice_id=voice_id, model_id=model_id)
+                                    a_fn = ch["file"].replace(".txt", ".mp3")
+                                    a_path = os.path.join(audio_dir, a_fn)
+                                    with open(a_path, "wb") as af:
+                                        af.write(a_bytes)
                                         
-                                        a_fn = ch["file"].replace(".txt", ".mp3")
-                                        a_path = os.path.join(audio_dir, a_fn)
-                                        with open(a_path, "wb") as af:
-                                            af.write(a_bytes)
-                                            
-                                        s_fn = ch["file"].replace(".txt", ".srt")
-                                        s_path = os.path.join(audio_dir, s_fn)
-                                        segs = create_srt_from_alignment(align)
-                                        save_srt_file(segs, s_path)
-                                        
-                                        ch["audio_file"] = a_fn
-                                        ch["srt_file"] = s_fn
+                                    s_fn = ch["file"].replace(".txt", ".srt")
+                                    s_path = os.path.join(audio_dir, s_fn)
+                                    segs = create_srt_from_alignment(align)
+                                    save_srt_file(segs, s_path)
+                                    
+                                    ch["audio_file"] = a_fn
+                                    ch["srt_file"] = s_fn
                                     
                                     # Stitch for demo
                                     st.write("Merging files...")

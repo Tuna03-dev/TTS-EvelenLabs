@@ -1,48 +1,63 @@
-import requests
+from elevenlabs.client import ElevenLabs
 import json
 import base64
 import os
-from config import ELEVENLABS_API_KEY
 
-# Default Voice ID for James/Daniel
-DEFAULT_VOICE_ID = "onwK4R9RrjmqSoxS88ve" 
+# Default Voice ID (Josh - Professional/Free-compatible)
+DEFAULT_VOICE_ID = "TxGEqnSAs9dnLURhk9Wb" 
 # Multilingual v2 model
-DEFAULT_MODEL_ID = "eleven_multilingual_v2"
+DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 
-def generate_speech_with_timestamps(text, voice_id=DEFAULT_VOICE_ID, model_id=DEFAULT_MODEL_ID):
+def get_voices(api_key):
+    """Fetches available voices from ElevenLabs."""
+    if not api_key: return []
+    try:
+        from elevenlabs.client import ElevenLabs
+        client = ElevenLabs(api_key=api_key)
+        v_list = client.voices.get_all()
+        return [{"name": v.name, "id": v.voice_id} for v in v_list.voices]
+    except Exception as e:
+        print(f"Error fetching voices: {e}")
+        return []
+
+def get_models(api_key):
+    """Fetches available models from ElevenLabs."""
+    if not api_key: return []
+    try:
+        from elevenlabs.client import ElevenLabs
+        client = ElevenLabs(api_key=api_key)
+        m_list = client.models.get_all()
+        # Filter for models that support TTS
+        return [{"name": m.name, "id": m.model_id} for m in m_list if m.can_do_text_to_speech]
+    except Exception as e:
+        print(f"Error fetching models: {e}")
+        return []
+
+def generate_speech_with_timestamps(text, api_key, voice_id=DEFAULT_VOICE_ID, model_id=DEFAULT_MODEL_ID):
     """
-    Calls ElevenLabs API with timestamps support.
+    Calls ElevenLabs API using the official SDK with timestamps support.
     Returns (audio_bytes, alignment_dict).
     """
-    if not ELEVENLABS_API_KEY:
+    if not api_key:
         raise ValueError("ElevenLabs API Key is missing. Please add it to Settings.")
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
+    client = ElevenLabs(api_key=api_key)
     
-    headers = {
-        "Content-Type": "application/json",
-        "xi-api-key": ELEVENLABS_API_KEY
-    }
-    
-    data = {
-        "text": text,
-        "model_id": model_id,
-        "voice_settings": {
+    # Use the official SDK method for timestamps
+    response = client.text_to_speech.convert_with_timestamps(
+        text=text,
+        voice_id=voice_id,
+        model_id=model_id,
+        voice_settings={
             "stability": 0.5,
             "similarity_boost": 0.75
         }
-    }
+    )
     
-    response = requests.post(url, json=data, headers=headers)
-    
-    if response.status_code != 200:
-        raise Exception(f"ElevenLabs API Error: {response.text}")
-        
-    res_data = response.json()
-    
-    # Audio is base64 encoded
-    audio_bytes = base64.b64decode(res_data["audio_base64"])
-    alignment = res_data["alignment"]
+    # The SDK returns an object with audio_base64 and alignment
+    # Note: alignment contains 'characters', 'character_start_times_seconds', 'character_end_times_seconds'
+    audio_bytes = base64.b64decode(response.audio_base_64)
+    alignment = response.alignment
     
     return audio_bytes, alignment
 
@@ -59,9 +74,9 @@ def create_srt_from_alignment(alignment, chars_per_segment=40):
     Converts ElevenLabs alignment data into a list of SRT segments.
     Groups characters into readable chunks.
     """
-    characters = alignment["characters"]
-    start_times = alignment["character_start_times_seconds"]
-    end_times = alignment["character_end_times_seconds"]
+    characters = alignment.characters
+    start_times = alignment.character_start_times_seconds
+    end_times = alignment.character_end_times_seconds
     
     segments = []
     current_chars = ""
