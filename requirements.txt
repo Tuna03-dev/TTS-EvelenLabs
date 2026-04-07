@@ -1,0 +1,9 @@
+streamlit
+requests
+python-dotenv
+pydub
+mutagen
+tenacity
+elevenlabs
+audioop-lts
+pydantic

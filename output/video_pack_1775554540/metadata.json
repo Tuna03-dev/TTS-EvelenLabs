@@ -1,0 +1,371 @@
+{
+  "pack_id": 1775554540,
+  "final_duration": 12921.599999999999,
+  "chapters_count": 52,
+  "chapters": [
+    {
+      "book": "John",
+      "chapter": 20,
+      "duration": 298.8,
+      "cumulative": 298.8,
+      "file": "01_john_20.txt"
+    },
+    {
+      "book": "2 Timothy",
+      "chapter": 3,
+      "duration": 118.8,
+      "cumulative": 417.6,
+      "file": "02_2_timothy_3.txt"
+    },
+    {
+      "book": "Galatians",
+      "chapter": 4,
+      "duration": 244.4,
+      "cumulative": 662.0,
+      "file": "03_galatians_4.txt"
+    },
+    {
+      "book": "Judges",
+      "chapter": 19,
+      "duration": 440.8,
+      "cumulative": 1102.8,
+      "file": "04_judges_19.txt"
+    },
+    {
+      "book": "1 Chronicles",
+      "chapter": 19,
+      "duration": 252.0,
+      "cumulative": 1354.8,
+      "file": "05_1_chronicles_19.txt"
+    },
+    {
+      "book": "John",
+      "chapter": 16,
+      "duration": 315.6,
+      "cumulative": 1670.4,
+      "file": "06_john_16.txt"
+    },
+    {
+      "book": "Zechariah",
+      "chapter": 11,
+      "duration": 200.8,
+      "cumulative": 1871.2,
+      "file": "07_zechariah_11.txt"
+    },
+    {
+      "book": "Psalm",
+      "chapter": 93,
+      "duration": 36.8,
+      "cumulative": 1908.0,
+      "file": "08_psalm_93.txt"
+    },
+    {
+      "book": "2 Kings",
+      "chapter": 24,
+      "duration": 233.6,
+      "cumulative": 2141.6,
+      "file": "09_2_kings_24.txt"
+    },
+    {
+      "book": "1 Timothy",
+      "chapter": 2,
+      "duration": 98.8,
+      "cumulative": 2240.4,
+      "file": "10_1_timothy_2.txt"
+    },
+    {
+      "book": "James",
+      "chapter": 3,
+      "duration": 151.2,
+      "cumulative": 2391.6,
+      "file": "11_james_3.txt"
+    },
+    {
+      "book": "Acts",
+      "chapter": 28,
+      "duration": 327.2,
+      "cumulative": 2718.7999999999997,
+      "file": "12_acts_28.txt"
+    },
+    {
+      "book": "Genesis",
+      "chapter": 25,
+      "duration": 282.4,
+      "cumulative": 3001.2,
+      "file": "13_genesis_25.txt"
+    },
+    {
+      "book": "Genesis",
+      "chapter": 30,
+      "duration": 408.8,
+      "cumulative": 3410.0,
+      "file": "14_genesis_30.txt"
+    },
+    {
+      "book": "Joshua",
+      "chapter": 19,
+      "duration": 377.6,
+      "cumulative": 3787.6,
+      "file": "15_joshua_19.txt"
+    },
+    {
+      "book": "John",
+      "chapter": 10,
+      "duration": 327.6,
+      "cumulative": 4115.2,
+      "file": "16_john_10.txt"
+    },
+    {
+      "book": "Acts",
+      "chapter": 17,
+      "duration": 342.0,
+      "cumulative": 4457.2,
+      "file": "17_acts_17.txt"
+    },
+    {
+      "book": "1 Kings",
+      "chapter": 10,
+      "duration": 335.6,
+      "cumulative": 4792.8,
+      "file": "18_1_kings_10.txt"
+    },
+    {
+      "book": "Colossians",
+      "chapter": 3,
+      "duration": 182.8,
+      "cumulative": 4975.6,
+      "file": "19_colossians_3.txt"
+    },
+    {
+      "book": "Psalm",
+      "chapter": 77,
+      "duration": 132.0,
+      "cumulative": 5107.6,
+      "file": "20_psalm_77.txt"
+    },
+    {
+      "book": "Mark",
+      "chapter": 10,
+      "duration": 484.8,
+      "cumulative": 5592.400000000001,
+      "file": "21_mark_10.txt"
+    },
+    {
+      "book": "Psalm",
+      "chapter": 135,
+      "duration": 131.6,
+      "cumulative": 5724.000000000001,
+      "file": "22_psalm_135.txt"
+    },
+    {
+      "book": "Leviticus",
+      "chapter": 8,
+      "duration": 394.8,
+      "cumulative": 6118.800000000001,
+      "file": "23_leviticus_8.txt"
+    },
+    {
+      "book": "Ezra",
+      "chapter": 1,
+      "duration": 148.4,
+      "cumulative": 6267.200000000001,
+      "file": "24_ezra_1.txt"
+    },
+    {
+      "book": "Revelation",
+      "chapter": 21,
+      "duration": 299.6,
+      "cumulative": 6566.800000000001,
+      "file": "25_revelation_21.txt"
+    },
+    {
+      "book": "Ezekiel",
+      "chapter": 30,
+      "duration": 304.0,
+      "cumulative": 6870.800000000001,
+      "file": "26_ezekiel_30.txt"
+    },
+    {
+      "book": "Exodus",
+      "chapter": 15,
+      "duration": 285.2,
+      "cumulative": 7156.000000000001,
+      "file": "27_exodus_15.txt"
+    },
+    {
+      "book": "Mark",
+      "chapter": 8,
+      "duration": 336.8,
+      "cumulative": 7492.800000000001,
+      "file": "28_mark_8.txt"
+    },
+    {
+      "book": "Luke",
+      "chapter": 21,
+      "duration": 328.0,
+      "cumulative": 7820.800000000001,
+      "file": "29_luke_21.txt"
+    },
+    {
+      "book": "Ezekiel",
+      "chapter": 27,
+      "duration": 362.8,
+      "cumulative": 8183.600000000001,
+      "file": "30_ezekiel_27.txt"
+    },
+    {
+      "book": "1 Corinthians",
+      "chapter": 4,
+      "duration": 203.6,
+      "cumulative": 8387.2,
+      "file": "31_1_corinthians_4.txt"
+    },
+    {
+      "book": "1 John",
+      "chapter": 2,
+      "duration": 294.4,
+      "cumulative": 8681.6,
+      "file": "32_1_john_2.txt"
+    },
+    {
+      "book": "Psalm",
+      "chapter": 92,
+      "duration": 103.2,
+      "cumulative": 8784.800000000001,
+      "file": "33_psalm_92.txt"
+    },
+    {
+      "book": "Revelation",
+      "chapter": 14,
+      "duration": 260.4,
+      "cumulative": 9045.2,
+      "file": "34_revelation_14.txt"
+    },
+    {
+      "book": "Ezra",
+      "chapter": 3,
+      "duration": 218.8,
+      "cumulative": 9264.0,
+      "file": "35_ezra_3.txt"
+    },
+    {
+      "book": "Matthew",
+      "chapter": 15,
+      "duration": 313.2,
+      "cumulative": 9577.2,
+      "file": "36_matthew_15.txt"
+    },
+    {
+      "book": "Isaiah",
+      "chapter": 32,
+      "duration": 174.4,
+      "cumulative": 9751.6,
+      "file": "37_isaiah_32.txt"
+    },
+    {
+      "book": "Romans",
+      "chapter": 12,
+      "duration": 158.8,
+      "cumulative": 9910.4,
+      "file": "38_romans_12.txt"
+    },
+    {
+      "book": "Zechariah",
+      "chapter": 7,
+      "duration": 151.2,
+      "cumulative": 10061.6,
+      "file": "39_zechariah_7.txt"
+    },
+    {
+      "book": "Job",
+      "chapter": 4,
+      "duration": 134.4,
+      "cumulative": 10196.0,
+      "file": "40_job_4.txt"
+    },
+    {
+      "book": "Romans",
+      "chapter": 3,
+      "duration": 224.8,
+      "cumulative": 10420.8,
+      "file": "41_romans_3.txt"
+    },
+    {
+      "book": "Judges",
+      "chapter": 8,
+      "duration": 394.8,
+      "cumulative": 10815.599999999999,
+      "file": "42_judges_8.txt"
+    },
+    {
+      "book": "1 Kings",
+      "chapter": 17,
+      "duration": 272.0,
+      "cumulative": 11087.599999999999,
+      "file": "43_1_kings_17.txt"
+    },
+    {
+      "book": "Job",
+      "chapter": 38,
+      "duration": 263.6,
+      "cumulative": 11351.199999999999,
+      "file": "44_job_38.txt"
+    },
+    {
+      "book": "John",
+      "chapter": 12,
+      "duration": 424.0,
+      "cumulative": 11775.199999999999,
+      "file": "45_john_12.txt"
+    },
+    {
+      "book": "1 Peter",
+      "chapter": 5,
+      "duration": 120.0,
+      "cumulative": 11895.199999999999,
+      "file": "46_1_peter_5.txt"
+    },
+    {
+      "book": "Leviticus",
+      "chapter": 24,
+      "duration": 220.4,
+      "cumulative": 12115.599999999999,
+      "file": "47_leviticus_24.txt"
+    },
+    {
+      "book": "2 Corinthians",
+      "chapter": 2,
+      "duration": 160.4,
+      "cumulative": 12275.999999999998,
+      "file": "48_2_corinthians_2.txt"
+    },
+    {
+      "book": "Psalm",
+      "chapter": 76,
+      "duration": 77.2,
+      "cumulative": 12353.199999999999,
+      "file": "49_psalm_76.txt"
+    },
+    {
+      "book": "Malachi",
+      "chapter": 3,
+      "duration": 226.0,
+      "cumulative": 12579.199999999999,
+      "file": "50_malachi_3.txt"
+    },
+    {
+      "book": "2 Timothy",
+      "chapter": 2,
+      "duration": 202.4,
+      "cumulative": 12781.599999999999,
+      "file": "51_2_timothy_2.txt"
+    },
+    {
+      "book": "2 Thessalonians",
+      "chapter": 3,
+      "duration": 140.0,
+      "cumulative": 12921.599999999999,
+      "file": "52_2_thessalonians_3.txt"
+    }
+  ]
+}
