@@ -5,7 +5,7 @@ load_dotenv()
 
 # API Configuration
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs")
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge-tts")
 TTS_API_KEY = os.getenv("TTS_API_KEY", ELEVENLABS_API_KEY)
 TTS_BASE_URL = os.getenv("TTS_BASE_URL", "https://api.elevenlabs.io/v1")
 

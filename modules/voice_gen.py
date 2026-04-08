@@ -3,6 +3,9 @@ import requests
 import asyncio
 import tempfile
 import os
+import io
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import edge_tts
@@ -177,8 +180,10 @@ def generate_speech_with_timestamps(
         "text": text,
         "model_id": model_id,
         "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75
+            "stability": 0.75,
+            "similarity_boost": 0.85,
+            "style": 0.0,
+            "use_speaker_boost": True,
         }
     }
     response = requests.post(url, headers=_build_headers(api_key), json=payload, timeout=120)
@@ -191,7 +196,6 @@ def generate_speech_with_timestamps(
     return audio_bytes, alignment
 
 from pydub import AudioSegment
-import io
 from modules.segmenter import segment_text
 
 def format_timestamp(seconds):
@@ -201,6 +205,267 @@ def format_timestamp(seconds):
     secs = int(seconds % 60)
     msecs = int((seconds * 1000) % 1000)
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{msecs:03d}"
+
+
+def _get_natural_pause_ms(text: str) -> int:
+    """Returns pause length based on punctuation at the end of chunk text."""
+    text = (text or "").strip()
+    if not text:
+        return 0
+    last = text[-1]
+    if last in ".!?":
+        return 380
+    if last in ",;:":
+        return 140
+    return 60
+
+
+def _tts_call_with_retry(
+    text,
+    api_key,
+    voice_id,
+    model_id,
+    base_url,
+    provider,
+    tts_rate,
+    tts_pitch,
+    max_retries=3,
+):
+    last_error = None
+    for attempt in range(1, max(1, int(max_retries)) + 1):
+        try:
+            audio_bytes, _ = generate_speech_with_timestamps(
+                text,
+                api_key=api_key,
+                voice_id=voice_id,
+                model_id=model_id,
+                base_url=base_url,
+                provider=provider,
+                tts_rate=tts_rate,
+                tts_pitch=tts_pitch,
+            )
+            if audio_bytes:
+                return audio_bytes, None
+            raise ValueError("Empty audio returned")
+        except Exception as e:
+            last_error = e
+            if attempt < max(1, int(max_retries)):
+                time.sleep(2 ** (attempt - 1))
+    return None, last_error
+
+
+def _merge_short_audio_items(audio_items, min_segment_seconds=1.0, min_text_chars=18):
+    """Merges tiny segments with the next one to reduce choppy cadence."""
+    if not audio_items:
+        return []
+
+    merged = []
+    i = 0
+    while i < len(audio_items):
+        current = audio_items[i]
+        cur_dur = len(current["audio"]) / 1000.0
+
+        if (
+            cur_dur < min_segment_seconds
+            and len(current["text"].strip()) <= min_text_chars
+            and i + 1 < len(audio_items)
+        ):
+            nxt = audio_items[i + 1]
+            merged.append({
+                "text": f"{current['text'].strip()} {nxt['text'].strip()}".strip(),
+                "audio": current["audio"] + nxt["audio"],
+            })
+            i += 2
+            continue
+
+        merged.append(current)
+        i += 1
+
+    return merged
+
+
+def _build_paced_audio_and_srt(
+    audio_items,
+    pause_weak_ms=80,
+    pause_strong_ms=160,
+    max_cps=17.0,
+    min_segment_seconds=1.0,
+):
+    """Builds final audio and SRT timeline with punctuation-aware pauses and rate balancing."""
+    items = _merge_short_audio_items(
+        audio_items,
+        min_segment_seconds=min_segment_seconds,
+    )
+
+    combined_audio = AudioSegment.empty()
+    srt_segments = []
+    current_offset = 0.0
+
+    for idx, item in enumerate(items):
+        text = item["text"].strip()
+        audio = item["audio"]
+        if not text or len(audio) <= 0:
+            continue
+
+        duration_sec = max(0.01, len(audio) / 1000.0)
+        cps = len(text) / duration_sec if duration_sec > 0 else 999.0
+
+        combined_audio += audio
+        srt_segments.append({
+            "text": text,
+            "start": current_offset,
+            "end": current_offset + duration_sec,
+        })
+        current_offset += duration_sec
+
+        extra_pause_ms = 0
+        if cps > max_cps:
+            extra_pause_ms += min(220, int((cps - max_cps) * 22))
+
+        if idx < len(items) - 1:
+            punctuation_pause = _get_natural_pause_ms(text)
+            if punctuation_pause >= 380:
+                extra_pause_ms += max(pause_strong_ms, punctuation_pause)
+            elif punctuation_pause >= 140:
+                extra_pause_ms += max(pause_weak_ms, punctuation_pause)
+            else:
+                extra_pause_ms += punctuation_pause
+
+        if extra_pause_ms > 0:
+            silence = AudioSegment.silent(duration=extra_pause_ms)
+            combined_audio += silence
+            current_offset += extra_pause_ms / 1000.0
+
+    return combined_audio, srt_segments
+
+
+def generate_chunked_speech_parallel(
+    text,
+    api_key,
+    voice_id=DEFAULT_VOICE_ID,
+    model_id=DEFAULT_MODEL_ID,
+    base_url="https://api.elevenlabs.io/v1",
+    provider="elevenlabs",
+    tts_rate="0%",
+    tts_pitch="0Hz",
+    lang="en",
+    max_words=25,
+    max_chars=120,
+    max_workers=3,
+    max_retries=3,
+    progress_callback=None,
+):
+    """Parallel chunked TTS with ordered merge and retry."""
+    chunks = segment_text(
+        text,
+        lang=lang,
+        max_words=max_words,
+        max_chars=max_chars,
+        sentence_mode=True,
+    )
+    if not chunks:
+        if progress_callback:
+            progress_callback("❌ Error: No chunks generated from text.")
+        return b"", []
+
+    if progress_callback:
+        progress_callback(f"📦 Split into {len(chunks)} chunks. Running TTS with {max_workers} workers...")
+
+    max_workers = max(1, int(max_workers or 1))
+    results = {}
+    errors = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _tts_call_with_retry,
+                chunk_text,
+                api_key,
+                voice_id,
+                model_id,
+                base_url,
+                provider,
+                tts_rate,
+                tts_pitch,
+                max_retries,
+            ): i
+            for i, chunk_text in enumerate(chunks)
+        }
+
+        completed = 0
+        total = len(chunks)
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            audio_bytes, err = future.result()
+            completed += 1
+
+            if err:
+                errors[idx] = err
+                if progress_callback:
+                    progress_callback(f"⚠️ Chunk {idx+1} error: {err}")
+            else:
+                results[idx] = audio_bytes
+                if progress_callback:
+                    progress_callback(f"✅ {completed}/{total} chunks done")
+
+    audio_items = []
+
+    for i, chunk_text in enumerate(chunks):
+        audio_bytes = results.get(i)
+
+        if not audio_bytes:
+            # Fallback: split smaller and try sequentially for this chunk only.
+            words = chunk_text.split()
+            if len(words) > 1:
+                midpoint = max(1, len(words) // 2)
+                fallback_parts = [
+                    " ".join(words[:midpoint]).strip(),
+                    " ".join(words[midpoint:]).strip(),
+                ]
+                for part_text in [p for p in fallback_parts if p]:
+                    part_audio, part_err = _tts_call_with_retry(
+                        part_text,
+                        api_key,
+                        voice_id,
+                        model_id,
+                        base_url,
+                        provider,
+                        tts_rate,
+                        tts_pitch,
+                        max_retries,
+                    )
+                    if part_err or not part_audio:
+                        if progress_callback:
+                            progress_callback(f"⚠️ Bỏ qua chunk {i+1} fallback lỗi")
+                        continue
+
+                    segment_audio = AudioSegment.from_file(io.BytesIO(part_audio), format="mp3")
+                    audio_items.append({
+                        "text": part_text.strip(),
+                        "audio": segment_audio,
+                    })
+            continue
+
+        segment_audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        audio_items.append({
+            "text": chunk_text.strip(),
+            "audio": segment_audio,
+        })
+
+    combined_audio, srt_segments = _build_paced_audio_and_srt(
+        audio_items,
+        pause_weak_ms=80,
+        pause_strong_ms=160,
+        max_cps=17.0,
+        min_segment_seconds=1.0,
+    )
+
+    if not srt_segments:
+        return b"", []
+
+    out_buf = io.BytesIO()
+    combined_audio.export(out_buf, format="mp3", bitrate="128k")
+    return out_buf.getvalue(), srt_segments
 
 def generate_chunked_speech(
     text,
@@ -220,7 +485,13 @@ def generate_chunked_speech(
     Implements VideoLingo technique: 
     Strictly measures each segment duration to build a precise timeline.
     """
-    chunks = segment_text(text, lang=lang, max_words=max_words, max_chars=max_chars)
+    chunks = segment_text(
+        text,
+        lang=lang,
+        max_words=max_words,
+        max_chars=max_chars,
+        sentence_mode=True,
+    )
     if not chunks:
         if progress_callback: progress_callback("❌ Error: No chunks generated from text.")
         return b"", []

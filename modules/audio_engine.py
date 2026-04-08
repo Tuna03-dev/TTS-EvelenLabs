@@ -9,6 +9,7 @@ except ImportError:
         pass
 
 from pydub import AudioSegment
+from pydub.effects import speedup
 import os
 import json
 from config import TARGET_DURATION_SECONDS
@@ -78,7 +79,8 @@ def get_audio_duration(filepath):
 def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS):
     """
     Stitches all chapter audios into one final MP3.
-    Adds silence gaps between chapters to reach exactly target_seconds.
+    Uses natural chapter pauses, optional tail silence, and gentle global speed-up
+    to keep duration close to target_seconds without cutting text.
     Also merges individual SRTs into one final subtitle file.
     
     Returns:
@@ -130,39 +132,94 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
         except OutputValidationError as e:
             raise OutputValidationError(f"Chapter {i+1} ({ch.get('book', '?')} {ch.get('chapter', '?')}): {e}")
         
-    # 2. Calculate padding needed (silence gaps)
-    # We add gaps between chapters. Total gaps = len(chapters) - 1
+    # 2. Build natural spacing strategy
+    # Keep chapter pauses natural, then pad tail if still short.
     num_gaps = len(chapters) - 1
+    natural_gap_ms = 700
+    tail_padding_ms = 0
+
     if num_gaps <= 0:
-        # Only one chapter, optionally add silence at the end.
         if target_seconds is not None:
             padding_total = target_seconds - total_raw_duration
-            gap_ms = int(max(0, padding_total) * 1000)
+            gap_ms = 0
+            tail_padding_ms = int(max(0, padding_total) * 1000)
         else:
             gap_ms = 0
+            tail_padding_ms = 0
         gap_segment = AudioSegment.silent(duration=gap_ms)
-        final_audio = audio_segments[0] + gap_segment
+        final_audio = audio_segments[0] + gap_segment + AudioSegment.silent(duration=tail_padding_ms)
     else:
         if target_seconds is not None:
-            padding_total = target_seconds - total_raw_duration
-            gap_ms = int(max(0, padding_total / num_gaps) * 1000)
+            base_with_natural_gaps = total_raw_duration + (num_gaps * (natural_gap_ms / 1000.0))
+            if base_with_natural_gaps <= target_seconds:
+                gap_ms = natural_gap_ms
+                tail_padding_ms = int((target_seconds - base_with_natural_gaps) * 1000)
+            else:
+                # If content is already long, minimize chapter gaps to avoid adding "slow" feeling.
+                available_gap_total_sec = max(0.0, target_seconds - total_raw_duration)
+                gap_ms = int((available_gap_total_sec / num_gaps) * 1000) if num_gaps > 0 else 0
+                tail_padding_ms = 0
         else:
-            gap_ms = 0
+            gap_ms = natural_gap_ms
+            tail_padding_ms = 0
         gap_segment = AudioSegment.silent(duration=gap_ms)
         
         final_audio = audio_segments[0]
         for i in range(1, len(audio_segments)):
             final_audio += gap_segment + audio_segments[i]
+        if tail_padding_ms > 0:
+            final_audio += AudioSegment.silent(duration=tail_padding_ms)
             
-    # 3. Export final audio
+    # 3. Gentle global speed adjustment (only if total is longer than target)
+    time_scale = 1.0
+    if target_seconds is not None:
+        final_duration_sec = len(final_audio) / 1000.0
+        if final_duration_sec > target_seconds:
+            required_speed = final_duration_sec / target_seconds
+            max_speedup = 1.07  # Keep speech natural (<= 7% faster)
+            applied_speed = min(required_speed, max_speedup)
+            if applied_speed > 1.001:
+                final_audio = speedup(final_audio, playback_speed=applied_speed, chunk_size=150, crossfade=20)
+                time_scale = 1.0 / applied_speed
+
+        # If after adjustments it is still short, pad tail to target.
+        final_duration_sec = len(final_audio) / 1000.0
+        if final_duration_sec < target_seconds:
+            final_audio += AudioSegment.silent(duration=int((target_seconds - final_duration_sec) * 1000))
+
+    # 4. Export final audio
     final_audio_path = os.path.join(final_dir, "full_audio_3h33.mp3")
     try:
         final_audio.export(final_audio_path, format="mp3", bitrate="128k")
         validate_audio_file(final_audio_path)  # Verify export succeeded
     except Exception as e:
         raise OutputValidationError(f"Failed to export final audio: {e}")
+
+    # Re-check exported duration and correct drift from MP3 encoder delay if needed.
+    if target_seconds is not None:
+        tolerance_sec = 0.5
+        for _ in range(3):
+            exported_duration = get_audio_duration(final_audio_path)
+            drift = target_seconds - exported_duration
+            if abs(drift) <= tolerance_sec:
+                break
+
+            correction_ms = int(drift * 1000)
+            corrected_audio = AudioSegment.from_file(final_audio_path)
+            if correction_ms > 0:
+                corrected_audio += AudioSegment.silent(duration=correction_ms)
+            elif correction_ms < 0:
+                corrected_audio = corrected_audio[:max(0, len(corrected_audio) + correction_ms)]
+
+            corrected_audio.export(final_audio_path, format="mp3", bitrate="128k")
+
+        final_check = get_audio_duration(final_audio_path)
+        if abs(target_seconds - final_check) > 1.0:
+            raise OutputValidationError(
+                f"Final audio duration drift is too large: got {final_check:.3f}s, target {target_seconds:.3f}s"
+            )
     
-    # 4. Merge Subtitles (.srt)
+    # 5. Merge Subtitles (.srt)
     final_srt_path = os.path.join(final_dir, "final_subtitles.srt")
     current_offset = 0
     gap_sec = gap_ms / 1000.0 if num_gaps > 0 else 0
@@ -190,8 +247,10 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
                             if not text_lines:
                                 continue
 
-                            start_adj = format_timestamp(_parse_srt_timestamp(start_str) + current_offset)
-                            end_adj = format_timestamp(_parse_srt_timestamp(end_str) + current_offset)
+                            raw_start = _parse_srt_timestamp(start_str) + current_offset
+                            raw_end = _parse_srt_timestamp(end_str) + current_offset
+                            start_adj = format_timestamp(raw_start * time_scale)
+                            end_adj = format_timestamp(raw_end * time_scale)
 
                             out_f.write(f"{subtitle_count}\n")
                             out_f.write(f"{start_adj} --> {end_adj}\n")

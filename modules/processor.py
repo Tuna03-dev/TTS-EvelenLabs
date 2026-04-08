@@ -46,12 +46,18 @@ def get_interleaved_chapters():
             
     return interleaved
 
-def estimate_duration(text):
+def estimate_duration(text, words_per_second=WORDS_PER_SECOND):
     """Simple estimation of text duration (seconds)."""
     words = len(text.split())
-    return words / WORDS_PER_SECOND
+    return words / max(0.1, float(words_per_second))
 
-def generate_video_pack(output_base_dir=BASE_OUTPUT_DIR, progress_callback=None):
+def generate_video_pack(
+    output_base_dir=BASE_OUTPUT_DIR,
+    progress_callback=None,
+    target_seconds=TARGET_DURATION_SECONDS,
+    words_per_second=WORDS_PER_SECOND,
+    fetch_workers=MAX_WORKERS,
+):
     """
     Orchestrates the generation using Parallel Processing.
     Support for custom output directory.
@@ -63,17 +69,24 @@ def generate_video_pack(output_base_dir=BASE_OUTPUT_DIR, progress_callback=None)
     
     chapters = get_interleaved_chapters()
     selected_chapters = []
-    total_duration = 0
+    total_duration = 0.0
+    target_seconds = max(60.0, float(target_seconds))
+    safe_budget_seconds = max(60.0, target_seconds - 200.0)
+    # Accept being near the safe budget without forcing bad chapter choices.
+    near_target_sec = max(90.0, target_seconds * 0.0075)
     
     if progress_callback:
-        progress_callback(f"🚀 Speed Boost Enabled: Fetching with {MAX_WORKERS} workers...")
+        progress_callback(f"🚀 Speed Boost Enabled: Fetching with {fetch_workers} workers...")
     
     # Using ThreadPoolExecutor for 10x Speed
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    fetch_workers = max(1, int(fetch_workers or 1))
+    with ThreadPoolExecutor(max_workers=fetch_workers) as executor:
         future_to_chapter = {}
         
         # We start by submitting a batch of chapters
-        batch_size = MAX_WORKERS * 2
+        batch_size = fetch_workers * 2
+        if progress_callback:
+            progress_callback(f"📦 Submitting initial batch of {batch_size} fetch tasks...")
         for i in range(batch_size):
             if i < len(chapters):
                 book, chapter = chapters[i]
@@ -84,7 +97,9 @@ def generate_video_pack(output_base_dir=BASE_OUTPUT_DIR, progress_callback=None)
         
         # Parallel Execution Loop
         while future_to_chapter:
-            if total_duration >= TARGET_DURATION_SECONDS:
+            if progress_callback:
+                progress_callback(f"⏳ Waiting on {len(future_to_chapter)} fetch task(s)...")
+            if total_duration >= safe_budget_seconds - near_target_sec:
                 # Cancel remaining
                 for f in future_to_chapter:
                     f.cancel()
@@ -96,13 +111,25 @@ def generate_video_pack(output_base_dir=BASE_OUTPUT_DIR, progress_callback=None)
                 try:
                     clean_text = future.result()
                     if clean_text:
-                        duration = estimate_duration(clean_text)
-                        
-                        # Stop if we hit duration
-                        if total_duration >= TARGET_DURATION_SECONDS:
+                        duration = estimate_duration(clean_text, words_per_second=words_per_second)
+                        current_gap = abs(safe_budget_seconds - total_duration)
+                        candidate_total = total_duration + duration
+                        candidate_gap = abs(safe_budget_seconds - candidate_total)
+
+                        if total_duration >= safe_budget_seconds:
                             continue
-                            
-                        total_duration += duration
+
+                        # Do not cut text; accept full chapter only when it improves closeness or still under target.
+                        should_add = False
+                        if candidate_total <= safe_budget_seconds:
+                            should_add = True
+                        elif candidate_gap < current_gap and candidate_gap <= max(near_target_sec, duration * 0.5):
+                            should_add = True
+
+                        if not should_add:
+                            continue
+
+                        total_duration = candidate_total
                         
                         # Prepend Chapter Header (e.g., "James 3.")
                         chapter_header = f"{book} {chapter}. "
@@ -122,14 +149,16 @@ def generate_video_pack(output_base_dir=BASE_OUTPUT_DIR, progress_callback=None)
                         })
                         
                         if progress_callback:
-                            progress_callback(f"Added {book} {chapter} | {int(total_duration // 60)}m / {int(TARGET_DURATION_SECONDS // 60)}m")
+                            progress_callback(
+                                f"✅ Fetched {book} {chapter} | est {duration:.1f}s | total {int(total_duration // 60)}m / {int(target_seconds // 60)}m"
+                            )
                             
                 except Exception as e:
                     if progress_callback:
                         progress_callback(f"⚠️ Error with {book} {chapter}: {e}")
                 
                 # Submit more if needed
-                if total_duration < TARGET_DURATION_SECONDS and chapter_idx < len(chapters):
+                if total_duration < safe_budget_seconds and chapter_idx < len(chapters):
                     next_book, next_ch = chapters[chapter_idx]
                     chapter_idx += 1
                     new_future = executor.submit(fetch_chapter_text, next_book, next_ch)

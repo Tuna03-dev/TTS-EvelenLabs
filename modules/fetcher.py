@@ -1,8 +1,11 @@
 import requests
 import re
 import time
+import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from config import BIBLE_API_BASE_URL
+
+logger = logging.getLogger("bible_video_automation.fetcher")
 
 class RateLimitError(Exception):
     """Custom exception for 429 errors."""
@@ -29,12 +32,16 @@ def fetch_chapter_text(book, chapter):
     """
     query = f"{book}+{chapter}"
     url = f"{BIBLE_API_BASE_URL}{query}?translation=kjv"
+    logger.info("Fetching chapter %s %s from %s", book, chapter, url)
+    print(f"[fetch] start {book} {chapter} -> {url}")
     
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=(5, 8))
         
         if response.status_code == 429:
             # We hit the rate limit! Raising specific error to trigger tenacity retry
+            logger.warning("Rate limited on %s %s", book, chapter)
+            print(f"[fetch] 429 rate limited {book} {chapter}")
             raise RateLimitError(f"Rate limit hit for {book} {chapter}")
             
         response.raise_for_status()
@@ -42,11 +49,16 @@ def fetch_chapter_text(book, chapter):
         raw_text = data.get('text', '')
         
         if not raw_text:
+            logger.warning("Empty text for %s %s", book, chapter)
+            print(f"[fetch] empty text {book} {chapter}")
             return None
             
+        logger.info("Fetched chapter %s %s successfully", book, chapter)
+        print(f"[fetch] done {book} {chapter} ({len(raw_text)} chars)")
         return clean_text(raw_text)
     except RateLimitError:
         raise
     except Exception as e:
-        print(f"Error fetching {book} {chapter}: {e}")
+        logger.exception("Error fetching %s %s", book, chapter)
+        print(f"[fetch] error {book} {chapter}: {e}")
         return None
