@@ -114,10 +114,10 @@ def generate_speech_with_timestamps(
         if edge_tts is None:
             raise ValueError("edge-tts is not installed. Please install it first.")
 
-        async def _generate_edge_tts():
+        async def _generate_edge_tts(selected_voice):
             communicate = edge_tts.Communicate(
                 text=text,
-                voice=voice_id or DEFAULT_EDGE_VOICE,
+                voice=selected_voice or DEFAULT_EDGE_VOICE,
                 rate=tts_rate,
                 pitch=tts_pitch,
             )
@@ -136,11 +136,38 @@ def generate_speech_with_timestamps(
                     })
             return b"".join(audio_chunks), word_boundaries
 
-        audio_bytes, boundaries = _run_async(_generate_edge_tts())
-        alignment = {
-            "words": boundaries,
-        }
-        return audio_bytes, alignment
+        voice_candidates = []
+        if voice_id:
+            voice_candidates.append(voice_id)
+
+        # If the selected voice is the deep preset, try safer fallback voices after it.
+        if (voice_id or "").lower() == "en-us-connorneural":
+            voice_candidates.extend([
+                "en-US-GuyNeural",
+                DEFAULT_EDGE_VOICE,
+                "en-US-AriaNeural",
+            ])
+        else:
+            voice_candidates.extend([
+                DEFAULT_EDGE_VOICE,
+                "en-US-GuyNeural",
+                "en-US-AriaNeural",
+            ])
+
+        last_error = None
+        for selected_voice in dict.fromkeys(voice_candidates):
+            try:
+                audio_bytes, boundaries = _run_async(_generate_edge_tts(selected_voice))
+                if audio_bytes:
+                    alignment = {
+                        "words": boundaries,
+                    }
+                    return audio_bytes, alignment
+                last_error = ValueError(f"edge-tts returned empty audio for voice={selected_voice}")
+            except Exception as e:
+                last_error = e
+
+        raise ValueError(f"edge-tts failed for all fallback voices: {last_error}")
 
     if not api_key:
         raise ValueError("ElevenLabs API Key is missing. Please add it to Settings.")
@@ -186,13 +213,14 @@ def generate_chunked_speech(
     tts_pitch="0Hz",
     lang="en",
     max_words=25,
+    max_chars=120,
     progress_callback=None
 ):
     """
     Implements VideoLingo technique: 
     Strictly measures each segment duration to build a precise timeline.
     """
-    chunks = segment_text(text, lang=lang, max_words=max_words)
+    chunks = segment_text(text, lang=lang, max_words=max_words, max_chars=max_chars)
     if not chunks:
         if progress_callback: progress_callback("❌ Error: No chunks generated from text.")
         return b"", []
@@ -203,39 +231,63 @@ def generate_chunked_speech(
     srt_segments = []
     current_offset = 0.0
 
+    def _split_chunk_smaller(chunk_text):
+        words = chunk_text.split()
+        if len(words) <= 1:
+            return [chunk_text]
+        midpoint = max(1, len(words) // 2)
+        left = " ".join(words[:midpoint]).strip()
+        right = " ".join(words[midpoint:]).strip()
+        return [part for part in (left, right) if part]
+
     for i, chunk_text in enumerate(chunks):
         if progress_callback: 
             progress_callback(f"🔊 Processing {i+1}/{len(chunks)}...")
-            
-        audio_bytes_chunk, _ = generate_speech_with_timestamps(
-            chunk_text,
-            api_key=api_key,
-            voice_id=voice_id,
-            model_id=model_id,
-            base_url=base_url,
-            provider=provider,
-            tts_rate=tts_rate,
-            tts_pitch=tts_pitch,
-        )
 
-        if not audio_bytes_chunk:
-            continue
+        chunk_parts = [chunk_text]
+        chunk_index = 0
+        while chunk_index < len(chunk_parts):
+            part_text = chunk_parts[chunk_index]
+            chunk_index += 1
 
-        try:
-            segment_audio = AudioSegment.from_file(io.BytesIO(audio_bytes_chunk), format="mp3")
-            
-            duration_sec = len(segment_audio) / 1000.0
-            srt_segments.append({
-                "text": chunk_text.strip(),
-                "start": current_offset,
-                "end": current_offset + duration_sec
-            })
-            
-            combined_audio += segment_audio
-            current_offset += duration_sec
-            
-        except Exception as e:
-            if progress_callback: progress_callback(f"⚠️ Skip chunk {i+1} due to audio error: {e}")
+            try:
+                audio_bytes_chunk, _ = generate_speech_with_timestamps(
+                    part_text,
+                    api_key=api_key,
+                    voice_id=voice_id,
+                    model_id=model_id,
+                    base_url=base_url,
+                    provider=provider,
+                    tts_rate=tts_rate,
+                    tts_pitch=tts_pitch,
+                )
+
+                if not audio_bytes_chunk:
+                    raise ValueError("No audio was received. Please verify that your parameters are correct.")
+
+                segment_audio = AudioSegment.from_file(io.BytesIO(audio_bytes_chunk), format="mp3")
+                duration_sec = len(segment_audio) / 1000.0
+
+                srt_segments.append({
+                    "text": part_text.strip(),
+                    "start": current_offset,
+                    "end": current_offset + duration_sec
+                })
+
+                combined_audio += segment_audio
+                current_offset += duration_sec
+
+            except Exception as e:
+                if len(part_text.split()) > 1:
+                    smaller_parts = _split_chunk_smaller(part_text)
+                    if len(smaller_parts) > 1:
+                        if progress_callback:
+                            progress_callback(f"↩️ Chunk {i+1} failed, retry smaller parts...")
+                        chunk_parts[chunk_index:chunk_index] = smaller_parts
+                        continue
+
+                if progress_callback:
+                    progress_callback(f"⚠️ Skip chunk {i+1} due to audio error: {e}")
 
     if not srt_segments:
         return b"", []

@@ -178,6 +178,7 @@ with st.sidebar:
     asr_base_url = ASR_BASE_URL
     asr_model = ASR_MODEL
     asr_chunk_seconds = ASR_CHUNK_SECONDS
+    asr_fallback_to_alignment = ASR_FALLBACK_TO_ALIGNMENT
     asr_local_device = ASR_LOCAL_DEVICE
     asr_provider = ASR_PROVIDER
     
@@ -335,7 +336,6 @@ if gen_full or gen_demo:
                 if "VideoLingo" in subtitle_source:
                     target_lang = asr_language if asr_language else ("vi" if "vi" in voice_id.lower() or "viet" in voice_id.lower() else "en")
                     update_status(f"🚀 [VideoLingo] Processing {ch_id}...")
-                    
                     audio_bytes, segments = generate_chunked_speech(
                         txt,
                         api_key=api_key,
