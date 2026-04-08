@@ -33,7 +33,7 @@ from config import (
     MAX_WORKERS,
 )
 from modules.pipeline import run_pipeline
-from modules.voice_gen import generate_speech_with_timestamps, generate_chunked_speech, generate_chunked_speech_parallel, create_srt_from_alignment, save_srt_file, get_edge_voices, get_edge_male_presets
+from modules.voice_gen import generate_speech_with_timestamps, generate_chunked_speech, generate_chunked_speech_parallel, create_srt_from_alignment, save_srt_file, get_edge_voices, get_edge_male_presets, get_kokoro_voice_presets
 from modules.transcriber import transcribe_audio_to_segments, save_segments_to_srt
 from modules.audio_engine import stitch_video_pack, validate_audio_file, validate_srt_file, OutputValidationError
 from modules.subtitle_config import SubtitleStyle, hex_to_ass, position_to_alignment, ass_alpha_from_opacity
@@ -47,7 +47,7 @@ st.set_page_config(
 )
 
 def is_tts_api_required(provider_name):
-    return provider_name != "edge-tts"
+    return provider_name == "elevenlabs"
 
 
 logging.basicConfig(
@@ -69,6 +69,29 @@ def _resolve_fetch_workers(mode: str) -> int:
     if mode == "Demo":
         return 3
     return min(6, int(MAX_WORKERS))
+
+
+def _normalize_voice_option(option: dict) -> dict:
+    """Adapter: normalize provider-specific voice payload to one schema."""
+    voice_id = option.get("id") or option.get("voice") or option.get("ShortName") or ""
+    display_name = (
+        option.get("label")
+        or option.get("name")
+        or option.get("FriendlyName")
+        or voice_id
+        or "Unknown voice"
+    )
+    return {
+        "id": voice_id,
+        "display": display_name,
+        "rate": option.get("rate", "-10%"),
+        "pitch": option.get("pitch", "0Hz"),
+        "raw": option,
+    }
+
+
+def _normalize_voice_options(options):
+    return [_normalize_voice_option(v) for v in (options or [])]
 
 
 def _init_generation_state():
@@ -119,6 +142,8 @@ def _generate_audio_and_subtitles(
     tts_base_url,
     tts_rate,
     tts_pitch,
+    tts_depth_semitones,
+    tts_softness,
     tts_max_workers,
     subtitle_source,
     asr_provider,
@@ -173,6 +198,8 @@ def _generate_audio_and_subtitles(
                     provider=tts_provider,
                     tts_rate=tts_rate,
                     tts_pitch=tts_pitch,
+                    tts_depth_semitones=tts_depth_semitones,
+                    tts_softness=tts_softness,
                     lang=target_lang,
                     max_words=25,
                     max_chars=120,
@@ -191,6 +218,8 @@ def _generate_audio_and_subtitles(
                     provider=tts_provider,
                     tts_rate=tts_rate,
                     tts_pitch=tts_pitch,
+                    tts_depth_semitones=tts_depth_semitones,
+                    tts_softness=tts_softness,
                 )
                 segments = None
 
@@ -406,19 +435,54 @@ with st.sidebar:
     st.caption("Chọn engine, chạy thử nhanh, rồi mở rộng sang full pack.")
 
     with st.expander("1. Text To Speech", expanded=True):
-        tts_provider = st.selectbox("Provider", ["edge-tts", "elevenlabs"], index=0 if TTS_PROVIDER == "edge-tts" else 1)
+        provider_options = ["edge-tts", "kokoro", "elevenlabs"]
+        default_provider_idx = provider_options.index(TTS_PROVIDER) if TTS_PROVIDER in provider_options else 0
+        tts_provider = st.selectbox("Provider", provider_options, index=default_provider_idx)
         if tts_provider == "edge-tts":
             st.success("✅ Sử dụng Edge-TTS miễn phí, không cần API Key.")
+        elif tts_provider == "kokoro":
+            st.info("🎙️ Kokoro-TTS local: giọng tự nhiên, ấm và chậm. Không cần API Key.")
         else:
             tts_api_key = st.text_input("ElevenLabs API Key", type="password", value=TTS_API_KEY).strip()
         
-        tts_style = st.selectbox("Giọng đọc", ["Default", "Male warm", "Male calm", "Male deep", "Male energetic"], index=1 if tts_provider == "edge-tts" else 0)
+        if tts_provider == "kokoro":
+            tts_style = st.selectbox(
+                "Giọng đọc",
+                ["Bible warm gentle", "Bible soft peaceful", "Bible calm male", "Bible deep male", "Michael male"],
+                index=0,
+            )
+        else:
+            tts_style = st.selectbox("Giọng đọc", ["Default", "Male warm", "Male calm", "Male deep", "Male sleepy", "Male energetic"], index=1 if tts_provider == "edge-tts" else 0)
         tts_max_workers = st.slider(
             "TTS parallel workers",
             min_value=1,
             max_value=8,
             value=3,
             help="Tăng tốc TTS theo chunk. Nếu gặp rate limit hoặc lỗi rỗng, giảm xuống 1-2."
+        )
+        tts_speed_factor = st.slider(
+            "Tốc độ đọc (speed factor)",
+            min_value=0.6,
+            max_value=1.2,
+            value=0.7,
+            step=0.05,
+            help="0.7 = chậm hơn đáng kể, phù hợp giọng đọc Bible từ tốn."
+        )
+        tts_depth_semitones = st.slider(
+            "Độ trầm (semitones xuống)",
+            min_value=0.0,
+            max_value=4.0,
+            value=1.5,
+            step=0.5,
+            help="Tăng để giọng trầm hơn. Áp dụng cho cả Edge-TTS và Kokoro-TTS.",
+        )
+        tts_softness = st.slider(
+            "Độ dịu giọng (anti-chói)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.7,
+            step=0.05,
+            help="Tăng để giảm chói/cao, nghe nhẹ và êm hơn.",
         )
 
     with st.expander("2. Subtitle Configuration", expanded=True):
@@ -481,10 +545,23 @@ with st.sidebar:
                 voices = [p for p in male_presets if p["label"] == "Male calm - Guy"]
             elif tts_style == "Male deep":
                 voices = [p for p in male_presets if p["label"] == "Male deep - Connor"]
+            elif tts_style == "Male sleepy":
+                voices = [p for p in male_presets if p["label"] == "Male sleepy - Andrew"]
             elif tts_style == "Male energetic":
                 voices = [p for p in male_presets if p["label"] == "Male energetic - Brandon"]
             else:
                 voices = get_edge_voices()
+    elif tts_provider == "kokoro":
+        with st.spinner("Loading Kokoro voice presets..."):
+            kokoro_presets = get_kokoro_voice_presets()
+            if tts_style == "Bible soft peaceful":
+                voices = [p for p in kokoro_presets if p["label"] == "Bible soft peaceful - Heart"]
+            elif tts_style == "Bible calm male":
+                voices = [p for p in kokoro_presets if p["label"] == "Bible calm male - Adam"]
+            elif tts_style in ("Bible deep male", "Michael male"):
+                voices = [p for p in kokoro_presets if p["label"] == "Bible deep male - Michael"]
+            else:
+                voices = [p for p in kokoro_presets if p["label"] == "Bible warm gentle - Sarah"]
     elif api_key:
         with st.spinner("Syncing your ElevenLabs account..."):
             from modules.voice_gen import get_voices, get_models
@@ -495,18 +572,19 @@ with st.sidebar:
     st.info("💡 Target mặc định: 3:33:33 = 12,813s")
 
     if voices:
-        if tts_provider == "edge-tts" and "label" in voices[0]:
-            voice_labels = [f"🗣️ {v['label']}" for v in voices]
-        else:
-            voice_labels = [f"🗣️ {v['name'] if 'name' in v else v['id']}" for v in voices]
+        normalized_voices = _normalize_voice_options(voices)
+        voice_labels = [f"🗣️ {v['display']}" for v in normalized_voices]
         selected_voice_label = st.selectbox("Voice", voice_labels, index=0)
-        selected_voice = voices[voice_labels.index(selected_voice_label)]
-        voice_id = selected_voice.get("id") or selected_voice.get("voice")
+        selected_voice = normalized_voices[voice_labels.index(selected_voice_label)]
+        voice_id = selected_voice["id"]
         tts_rate = selected_voice.get("rate", "-10%")
         tts_pitch = selected_voice.get("pitch", "0Hz")
     else:
-        default_voice = "en-US-AriaNeural" if tts_provider == "edge-tts" else "TxGEqnSAs9dnLURhk9Wb"
+        default_voice = "en-US-AriaNeural" if tts_provider == "edge-tts" else ("af_sarah" if tts_provider == "kokoro" else "TxGEqnSAs9dnLURhk9Wb")
         voice_id = st.text_input("Voice / ShortName", value=default_voice)
+
+    # Global override so user can custom slow/fast regardless preset.
+    tts_rate = f"{(tts_speed_factor - 1.0) * 100:+.0f}%"
 
     if models and tts_provider == "elevenlabs":
         model_labels = [f"🤖 {m['name']}" for m in models]
@@ -600,6 +678,8 @@ if fetch_text:
                 "provider": tts_provider,
                 "tts_rate": tts_rate,
                 "tts_pitch": tts_pitch,
+                "tts_depth_semitones": tts_depth_semitones,
+                "tts_softness": tts_softness,
                 "lang": "en",
                 "max_words": 25,
                 "max_chars": 120,
@@ -653,6 +733,8 @@ if generate_audio:
             st.subheader("🎙️ Generating Audio & Subtitles")
             if tts_provider == "edge-tts":
                 st.caption("edge-tts: free, no local server, requires internet only.")
+            elif tts_provider == "kokoro":
+                st.caption("Kokoro-TTS: local inference, natural soft voice. Có thể cần cài espeak-ng trên Windows.")
             else:
                 st.caption("ElevenLabs: requires API key and network access.")
 
@@ -668,6 +750,8 @@ if generate_audio:
                 tts_base_url=tts_base_url,
                 tts_rate=tts_rate,
                 tts_pitch=tts_pitch,
+                tts_depth_semitones=tts_depth_semitones,
+                tts_softness=tts_softness,
                 tts_max_workers=tts_max_workers,
                 subtitle_source=subtitle_source,
                 asr_provider=asr_provider,
@@ -1018,6 +1102,8 @@ if os.path.exists(output_dir):
                                                 provider=tts_provider,
                                                 tts_rate=tts_rate,
                                                 tts_pitch=tts_pitch,
+                                                tts_depth_semitones=tts_depth_semitones,
+                                                tts_softness=tts_softness,
                                                 lang=target_lang,
                                                 max_words=25,
                                                 max_chars=120,
@@ -1036,6 +1122,8 @@ if os.path.exists(output_dir):
                                                 provider=tts_provider,
                                                 tts_rate=tts_rate,
                                                 tts_pitch=tts_pitch,
+                                                tts_depth_semitones=tts_depth_semitones,
+                                                tts_softness=tts_softness,
                                             )
                                             segs = None
                                         

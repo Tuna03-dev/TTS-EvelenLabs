@@ -3,7 +3,7 @@ set VENV_DIR=.venv
 
 IF NOT EXIST %VENV_DIR% (
     echo [🚀] Đang cài đặt môi trường cho lần đầu chạy...
-    python setup_env.py
+    py -3.12 setup_env.py
 ) ELSE (
     echo [✅] Môi trường ảo đã sẵn sàng.
 )

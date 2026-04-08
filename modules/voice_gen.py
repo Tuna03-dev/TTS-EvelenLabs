@@ -1,16 +1,22 @@
 import base64
 import requests
 import asyncio
-import tempfile
-import os
 import io
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+
+import numpy as np
 
 try:
     import edge_tts  # type: ignore[import-not-found]
 except ImportError:
     edge_tts = None
+
+try:
+    from kokoro import KPipeline  # type: ignore[import-not-found]
+except ImportError:
+    KPipeline = None
 
 # Default Voice ID (Josh - Professional/Free-compatible)
 DEFAULT_VOICE_ID = "TxGEqnSAs9dnLURhk9Wb" 
@@ -21,8 +27,17 @@ EDGE_MALE_VOICE_PRESETS = [
     {"label": "Male warm - Ryan", "voice": "en-GB-RyanNeural", "rate": "-10%", "pitch": "+0Hz"},
     {"label": "Male calm - Guy", "voice": "en-US-GuyNeural", "rate": "-5%", "pitch": "-2Hz"},
     {"label": "Male deep - Connor", "voice": "en-US-ConnorNeural", "rate": "-8%", "pitch": "-3Hz"},
+    {"label": "Male sleepy - Andrew", "voice": "en-US-AndrewNeural", "rate": "-25%", "pitch": "-6Hz"},
     {"label": "Male energetic - Brandon", "voice": "en-US-BrandonNeural", "rate": "-3%", "pitch": "+1Hz"},
 ]
+KOKORO_SAMPLE_RATE = 24000
+KOKORO_BIBLE_VOICE_PRESETS = [
+    {"label": "Bible warm gentle - Sarah", "voice": "af_sarah", "rate": "-18%", "pitch": "0Hz"},
+    {"label": "Bible soft peaceful - Heart", "voice": "af_heart", "rate": "-20%", "pitch": "0Hz"},
+    {"label": "Bible calm male - Adam", "voice": "am_adam", "rate": "-16%", "pitch": "0Hz"},
+    {"label": "Bible deep male - Michael", "voice": "am_michael", "rate": "-14%", "pitch": "0Hz"},
+]
+_KOKORO_PIPELINE_CACHE = {}
 
 
 def _normalize_base_url(base_url):
@@ -99,6 +114,65 @@ def get_edge_voices(locale_prefix=None):
 def get_edge_male_presets():
     return EDGE_MALE_VOICE_PRESETS
 
+
+def get_kokoro_voice_presets():
+    return KOKORO_BIBLE_VOICE_PRESETS
+
+
+def _parse_tts_rate_to_speed(tts_rate):
+    match = re.match(r"^([+-]?)\s*(\d+(?:\.\d+)?)%$", str(tts_rate or "0%").strip())
+    if not match:
+        return 1.0
+    sign = -1.0 if match.group(1) == "-" else 1.0
+    percent = float(match.group(2)) * sign
+    return max(0.70, min(1.30, 1.0 + (percent / 100.0)))
+
+
+def _apply_depth_shift(audio_bytes, semitones_down=0.0):
+    """Lower perceived pitch while preserving duration."""
+    depth = float(semitones_down or 0.0)
+    if depth <= 0.0:
+        return audio_bytes
+
+    try:
+        src = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        pitch_factor = 2 ** (-depth / 12.0)
+        shifted = src._spawn(src.raw_data, overrides={"frame_rate": int(src.frame_rate * pitch_factor)})
+        shifted = shifted.set_frame_rate(src.frame_rate)
+        out_buf = io.BytesIO()
+        shifted.export(out_buf, format="mp3", bitrate="128k")
+        return out_buf.getvalue()
+    except Exception:
+        return audio_bytes
+
+
+def _apply_soft_tone(audio_bytes, softness=0.0):
+    """Reduce harshness: low-pass + gentle gain trim."""
+    soft = max(0.0, min(1.0, float(softness or 0.0)))
+    if soft <= 0.0:
+        return audio_bytes
+    try:
+        src = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        cutoff_hz = int(5200 - (soft * 2800))  # 0.0=>5200, 1.0=>2400
+        out = src.low_pass_filter(cutoff_hz)
+        out = out.apply_gain(-(1.2 * soft))
+        out_buf = io.BytesIO()
+        out.export(out_buf, format="mp3", bitrate="128k")
+        return out_buf.getvalue()
+    except Exception:
+        return audio_bytes
+
+
+def _get_kokoro_pipeline(lang_code="a"):
+    key = lang_code or "a"
+    if key in _KOKORO_PIPELINE_CACHE:
+        return _KOKORO_PIPELINE_CACHE[key]
+    if KPipeline is None:
+        raise ValueError("Kokoro is not installed. Run: pip install kokoro")
+    pipeline = KPipeline(lang_code=key)
+    _KOKORO_PIPELINE_CACHE[key] = pipeline
+    return pipeline
+
 def generate_speech_with_timestamps(
     text,
     api_key,
@@ -108,11 +182,51 @@ def generate_speech_with_timestamps(
     provider="elevenlabs",
     tts_rate="-10%",
     tts_pitch="0Hz",
+    tts_depth_semitones=0.0,
+    tts_softness=0.0,
 ):
     """
     Calls ElevenLabs API using the official SDK with timestamps support.
     Returns (audio_bytes, alignment_dict).
     """
+    if provider == "kokoro":
+        speed = _parse_tts_rate_to_speed(tts_rate)
+        selected_voice = voice_id or "af_sarah"
+        try:
+            pipeline = _get_kokoro_pipeline(lang_code="a")
+            generator = pipeline(
+                text,
+                voice=selected_voice,
+                speed=speed,
+                split_pattern=r"\n+",
+            )
+            chunks = []
+            for _, _, audio in generator:
+                arr = np.asarray(audio, dtype=np.float32)
+                if arr.size:
+                    chunks.append(arr)
+            if not chunks:
+                raise ValueError("Kokoro returned empty audio.")
+            merged = np.concatenate(chunks)
+            pcm16 = np.clip(merged, -1.0, 1.0)
+            pcm16 = (pcm16 * 32767.0).astype(np.int16)
+            segment = AudioSegment(
+                data=pcm16.tobytes(),
+                sample_width=2,
+                frame_rate=KOKORO_SAMPLE_RATE,
+                channels=1,
+            )
+            out_buf = io.BytesIO()
+            segment.export(out_buf, format="mp3", bitrate="128k")
+            audio_bytes = _apply_depth_shift(out_buf.getvalue(), tts_depth_semitones)
+            audio_bytes = _apply_soft_tone(audio_bytes, tts_softness)
+            return audio_bytes, {"words": []}
+        except Exception as e:
+            raise ValueError(
+                "Kokoro TTS failed. On Windows, ensure espeak-ng is installed and available in PATH. "
+                f"Original error: {e}"
+            ) from e
+
     if provider == "edge-tts":
         if edge_tts is None:
             raise ValueError("edge-tts is not installed. Please install it first.")
@@ -165,6 +279,8 @@ def generate_speech_with_timestamps(
                     alignment = {
                         "words": boundaries,
                     }
+                    audio_bytes = _apply_depth_shift(audio_bytes, tts_depth_semitones)
+                    audio_bytes = _apply_soft_tone(audio_bytes, tts_softness)
                     return audio_bytes, alignment
                 last_error = ValueError(f"edge-tts returned empty audio for voice={selected_voice}")
             except Exception as e:
@@ -193,6 +309,8 @@ def generate_speech_with_timestamps(
     audio_bytes = base64.b64decode(data["audio_base64"])
     alignment = data["alignment"]
     
+    audio_bytes = _apply_depth_shift(audio_bytes, tts_depth_semitones)
+    audio_bytes = _apply_soft_tone(audio_bytes, tts_softness)
     return audio_bytes, alignment
 
 from pydub import AudioSegment
@@ -229,6 +347,8 @@ def _tts_call_with_retry(
     provider,
     tts_rate,
     tts_pitch,
+    tts_depth_semitones=0.0,
+    tts_softness=0.0,
     max_retries=3,
 ):
     last_error = None
@@ -243,6 +363,8 @@ def _tts_call_with_retry(
                 provider=provider,
                 tts_rate=tts_rate,
                 tts_pitch=tts_pitch,
+                tts_depth_semitones=tts_depth_semitones,
+                tts_softness=tts_softness,
             )
             if audio_bytes:
                 return audio_bytes, None
@@ -348,6 +470,8 @@ def generate_chunked_speech_parallel(
     provider="elevenlabs",
     tts_rate="-10%",
     tts_pitch="0Hz",
+    tts_depth_semitones=0.0,
+    tts_softness=0.0,
     lang="en",
     max_words=25,
     max_chars=120,
@@ -372,6 +496,11 @@ def generate_chunked_speech_parallel(
         progress_callback(f"📦 Split into {len(chunks)} chunks. Running TTS with {max_workers} workers...")
 
     max_workers = max(1, int(max_workers or 1))
+    if provider == "kokoro" and max_workers > 1:
+        # Kokoro is local/CPU-heavy; concurrent chunk calls cause repeated model/voice checks and slows down.
+        max_workers = 1
+        if progress_callback:
+            progress_callback("ℹ️ Kokoro optimized mode: forcing sequential chunk generation (workers=1).")
     results = {}
     errors = {}
 
@@ -387,6 +516,8 @@ def generate_chunked_speech_parallel(
                 provider,
                 tts_rate,
                 tts_pitch,
+                tts_depth_semitones,
+                tts_softness,
                 max_retries,
             ): i
             for i, chunk_text in enumerate(chunks)
@@ -432,6 +563,8 @@ def generate_chunked_speech_parallel(
                         provider,
                         tts_rate,
                         tts_pitch,
+                        tts_depth_semitones,
+                        tts_softness,
                         max_retries,
                     )
                     if part_err or not part_audio:
@@ -476,6 +609,8 @@ def generate_chunked_speech(
     provider="elevenlabs",
     tts_rate="-10%",
     tts_pitch="0Hz",
+    tts_depth_semitones=0.0,
+    tts_softness=0.0,
     lang="en",
     max_words=25,
     max_chars=120,
@@ -531,6 +666,8 @@ def generate_chunked_speech(
                     provider=provider,
                     tts_rate=tts_rate,
                     tts_pitch=tts_pitch,
+                    tts_depth_semitones=tts_depth_semitones,
+                    tts_softness=tts_softness,
                 )
 
                 if not audio_bytes_chunk:

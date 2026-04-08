@@ -8,7 +8,7 @@ Hệ thống chuyển đổi văn bản sang âm thanh (TTS) cho các chương K
 
 -   **VideoLingo Semantic Chunking**: Tự động chia nhỏ văn bản thành các cụm ngữ nghĩa hợp lý, đảm bảo phụ đề không bị cắt ngang câu.
 -   **Precise Alignment**: Tính toán thời gian phụ đề dựa trên độ dài thực tế của từng đoạn âm thanh sinh ra (khớp 100%).
--   **Đa dạng Engine**: Hỗ trợ **ElevenLabs** (Premium) và **Edge-TTS** (Miễn phí).
+-   **Đa dạng Engine**: Hỗ trợ **Kokoro-TTS** (giọng tự nhiên, local), **ElevenLabs** (Premium) và **Edge-TTS** (Miễn phí).
 -   **Giao diện One-Click**: Khởi động dễ dàng bằng file `.bat` trên Windows.
 -   **Hỗ trợ đa ngôn ngữ**: Tối ưu cho tiếng Anh (spaCy) và tiếng Việt (Regex/spaCy).
 
@@ -16,7 +16,7 @@ Hệ thống chuyển đổi văn bản sang âm thanh (TTS) cho các chương K
 
 ## 🚀 Cài đặt nhanh (Windows)
 
-1.  Đảm bảo bạn đã cài đặt **Python 3.8+**.
+1.  Đảm bảo bạn đã cài đặt **Python 3.12.x**.
 2.  Chỉ cần double-click vào file **`OneKeyStart.bat`**.
     -   Hệ thống sẽ tự động tạo môi trường ảo `.venv`.
     -   Tự động cài đặt các thư viện từ `requirements.txt`.
