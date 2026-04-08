@@ -9,7 +9,6 @@ except ImportError:
         pass
 
 from pydub import AudioSegment
-from pydub.effects import speedup
 import os
 import json
 from config import TARGET_DURATION_SECONDS
@@ -76,7 +75,39 @@ def get_audio_duration(filepath):
     audio = AudioSegment.from_file(filepath)
     return len(audio) / 1000.0
 
-def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS):
+
+def time_stretch_audio(segment, target_seconds):
+    """Best-effort pitch-preserving stretch with safe fallback."""
+    current_seconds = len(segment) / 1000.0
+    if current_seconds <= 0 or target_seconds <= 0:
+        return segment
+
+    if abs(current_seconds - target_seconds) / current_seconds < 0.001:
+        return segment
+
+    try:
+        import numpy as np
+        import pyrubberband as pyrb
+    except Exception:
+        return segment
+
+    samples = np.array(segment.get_array_of_samples(), dtype=np.float32)
+    channels = segment.channels
+    sample_rate = segment.frame_rate
+
+    if channels == 2:
+        samples = samples.reshape((-1, 2))
+
+    ratio = current_seconds / target_seconds
+    stretched = pyrb.time_stretch(samples, sample_rate, ratio)
+
+    if channels == 2:
+        stretched = stretched.flatten()
+
+    out = np.clip(stretched, -32768, 32767).astype(np.int16)
+    return AudioSegment(out.tobytes(), frame_rate=sample_rate, sample_width=2, channels=channels)
+
+def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS, progress_callback=None):
     """
     Stitches all chapter audios into one final MP3.
     Uses natural chapter pauses, optional tail silence, and gentle global speed-up
@@ -92,6 +123,10 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
     audio_dir = os.path.join(pack_dir, "audio")
     final_dir = os.path.join(pack_dir, "final")
     os.makedirs(final_dir, exist_ok=True)
+
+    def _log(message):
+        if progress_callback:
+            progress_callback(message)
     
     if not chapters:
         raise ValueError("No chapters provided for stitching.")
@@ -116,6 +151,8 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
         error_msg = "Missing or empty chapter files:\n" + "\n".join(missing_files)
         raise OutputValidationError(error_msg)
 
+    _log(f"Stitch: loading {len(chapters)} audio file(s)...")
+
     # 1. Calculate total raw audio duration
     total_raw_duration = 0
     audio_segments = []
@@ -123,12 +160,13 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
     for i, ch in enumerate(chapters):
         audio_path = os.path.join(audio_dir, ch["audio_file"])
         try:
-            validate_audio_file(audio_path)
             segment = AudioSegment.from_file(audio_path)
             audio_segments.append(segment)
-            ch_duration = len(segment) / 1000.0
+            ch_duration = (ch.get("actual_ms") or len(segment)) / 1000.0
             total_raw_duration += ch_duration
             ch["duration"] = ch_duration  # Store for reference
+            if (i + 1) % 5 == 0 or i == len(chapters) - 1:
+                _log(f"Stitch: loaded {i + 1}/{len(chapters)} files")
         except OutputValidationError as e:
             raise OutputValidationError(f"Chapter {i+1} ({ch.get('book', '?')} {ch.get('chapter', '?')}): {e}")
         
@@ -169,19 +207,13 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
             final_audio += gap_segment + audio_segments[i]
         if tail_padding_ms > 0:
             final_audio += AudioSegment.silent(duration=tail_padding_ms)
+
+    _log(f"Stitch: raw={total_raw_duration:.1f}s, prepared={len(final_audio) / 1000.0:.1f}s before final trim/pad")
             
-    # 3. Gentle global speed adjustment (only if total is longer than target)
+    # 3. Keep the Bible pace natural. We do not speed up to force a shorter runtime.
     time_scale = 1.0
     if target_seconds is not None:
         final_duration_sec = len(final_audio) / 1000.0
-        if final_duration_sec > target_seconds:
-            required_speed = final_duration_sec / target_seconds
-            max_speedup = 1.07  # Keep speech natural (<= 7% faster)
-            applied_speed = min(required_speed, max_speedup)
-            if applied_speed > 1.001:
-                final_audio = speedup(final_audio, playback_speed=applied_speed, chunk_size=150, crossfade=20)
-                time_scale = 1.0 / applied_speed
-
         # If after adjustments it is still short, pad tail to target.
         final_duration_sec = len(final_audio) / 1000.0
         if final_duration_sec < target_seconds:
@@ -190,6 +222,7 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
     # 4. Export final audio
     final_audio_path = os.path.join(final_dir, "full_audio_3h33.mp3")
     try:
+        _log("Stitch: exporting final MP3...")
         final_audio.export(final_audio_path, format="mp3", bitrate="128k")
         validate_audio_file(final_audio_path)  # Verify export succeeded
     except Exception as e:
@@ -201,10 +234,11 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
         for _ in range(3):
             exported_duration = get_audio_duration(final_audio_path)
             drift = target_seconds - exported_duration
-            if abs(drift) <= tolerance_sec:
+            if exported_duration >= target_seconds or abs(drift) <= tolerance_sec:
                 break
 
             correction_ms = int(drift * 1000)
+            _log(f"Stitch: correcting export drift by {correction_ms}ms...")
             corrected_audio = AudioSegment.from_file(final_audio_path)
             if correction_ms > 0:
                 corrected_audio += AudioSegment.silent(duration=correction_ms)
@@ -214,10 +248,11 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
             corrected_audio.export(final_audio_path, format="mp3", bitrate="128k")
 
         final_check = get_audio_duration(final_audio_path)
-        if abs(target_seconds - final_check) > 1.0:
+        if final_check + 1.0 < target_seconds:
             raise OutputValidationError(
                 f"Final audio duration drift is too large: got {final_check:.3f}s, target {target_seconds:.3f}s"
             )
+        _log(f"Stitch: final duration {final_check:.3f}s")
     
     # 5. Merge Subtitles (.srt)
     final_srt_path = os.path.join(final_dir, "final_subtitles.srt")
@@ -226,6 +261,8 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
     
     srt_written_count = 0
     try:
+        _log("Stitch: merging subtitles...")
+        subtitle_limit_sec = get_audio_duration(final_audio_path) if target_seconds is not None else None
         with open(final_srt_path, "w", encoding="utf-8") as out_f:
             subtitle_count = 1
             for i, ch in enumerate(chapters):
@@ -252,6 +289,14 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
                             start_adj = format_timestamp(raw_start * time_scale)
                             end_adj = format_timestamp(raw_end * time_scale)
 
+                            if subtitle_limit_sec is not None:
+                                start_sec = _parse_srt_timestamp(start_adj)
+                                end_sec = _parse_srt_timestamp(end_adj)
+                                if start_sec >= subtitle_limit_sec:
+                                    continue
+                                if end_sec > subtitle_limit_sec:
+                                    end_adj = format_timestamp(subtitle_limit_sec)
+
                             out_f.write(f"{subtitle_count}\n")
                             out_f.write(f"{start_adj} --> {end_adj}\n")
                             out_f.write("\n".join(text_lines) + "\n\n")
@@ -259,7 +304,7 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
                             srt_written_count += 1
                     
                     # Update offset for next chapter: chapter_duration + gap
-                    ch_duration = len(audio_segments[i]) / 1000.0
+                    ch_duration = (chapters[i].get("actual_ms") or len(audio_segments[i])) / 1000.0
                     current_offset += ch_duration + gap_sec
         
         # Validate final SRT (allow 0 segments for edge case, but at least 1 for normal case)
@@ -267,6 +312,7 @@ def stitch_video_pack(pack_dir, chapters, target_seconds=TARGET_DURATION_SECONDS
         if srt_written_count == 0:
             raise OutputValidationError(f"Final SRT file has no subtitle segments (written: {srt_written_count})")
         validate_srt_file(final_srt_path, min_segments=0)  # Already validated count above
+        _log(f"Stitch: subtitle merge complete ({srt_written_count} segments)")
         
     except OutputValidationError:
         raise

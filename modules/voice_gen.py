@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
-    import edge_tts
+    import edge_tts  # type: ignore[import-not-found]
 except ImportError:
     edge_tts = None
 
@@ -18,10 +18,10 @@ DEFAULT_VOICE_ID = "TxGEqnSAs9dnLURhk9Wb"
 DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 EDGE_MALE_VOICE_PRESETS = [
-    {"label": "Male warm - Ryan", "voice": "en-GB-RyanNeural", "rate": "+0%", "pitch": "+0Hz"},
+    {"label": "Male warm - Ryan", "voice": "en-GB-RyanNeural", "rate": "-10%", "pitch": "+0Hz"},
     {"label": "Male calm - Guy", "voice": "en-US-GuyNeural", "rate": "-5%", "pitch": "-2Hz"},
-    {"label": "Male deep - Connor", "voice": "en-US-ConnorNeural", "rate": "-3%", "pitch": "-3Hz"},
-    {"label": "Male energetic - Brandon", "voice": "en-US-BrandonNeural", "rate": "+3%", "pitch": "+1Hz"},
+    {"label": "Male deep - Connor", "voice": "en-US-ConnorNeural", "rate": "-8%", "pitch": "-3Hz"},
+    {"label": "Male energetic - Brandon", "voice": "en-US-BrandonNeural", "rate": "-3%", "pitch": "+1Hz"},
 ]
 
 
@@ -106,7 +106,7 @@ def generate_speech_with_timestamps(
     model_id=DEFAULT_MODEL_ID,
     base_url="https://api.elevenlabs.io/v1",
     provider="elevenlabs",
-    tts_rate="0%",
+    tts_rate="-10%",
     tts_pitch="0Hz",
 ):
     """
@@ -346,7 +346,7 @@ def generate_chunked_speech_parallel(
     model_id=DEFAULT_MODEL_ID,
     base_url="https://api.elevenlabs.io/v1",
     provider="elevenlabs",
-    tts_rate="0%",
+    tts_rate="-10%",
     tts_pitch="0Hz",
     lang="en",
     max_words=25,
@@ -474,7 +474,7 @@ def generate_chunked_speech(
     model_id=DEFAULT_MODEL_ID,
     base_url="https://api.elevenlabs.io/v1",
     provider="elevenlabs",
-    tts_rate="0%",
+    tts_rate="-10%",
     tts_pitch="0Hz",
     lang="en",
     max_words=25,

@@ -32,7 +32,7 @@ from config import (
     ASR_LOCAL_DEVICE,
     MAX_WORKERS,
 )
-from modules.processor import generate_video_pack
+from modules.pipeline import run_pipeline
 from modules.voice_gen import generate_speech_with_timestamps, generate_chunked_speech, generate_chunked_speech_parallel, create_srt_from_alignment, save_srt_file, get_edge_voices, get_edge_male_presets
 from modules.transcriber import transcribe_audio_to_segments, save_segments_to_srt
 from modules.audio_engine import stitch_video_pack, validate_audio_file, validate_srt_file, OutputValidationError
@@ -470,7 +470,7 @@ with st.sidebar:
 
     voices = []
     models = []
-    tts_rate = "0%"
+    tts_rate = "-10%"
     tts_pitch = "0Hz"
     if tts_provider == "edge-tts":
         with st.spinner("Loading Edge TTS voices..."):
@@ -502,7 +502,7 @@ with st.sidebar:
         selected_voice_label = st.selectbox("Voice", voice_labels, index=0)
         selected_voice = voices[voice_labels.index(selected_voice_label)]
         voice_id = selected_voice.get("id") or selected_voice.get("voice")
-        tts_rate = selected_voice.get("rate", "0%")
+        tts_rate = selected_voice.get("rate", "-10%")
         tts_pitch = selected_voice.get("pitch", "0Hz")
     else:
         default_voice = "en-US-AriaNeural" if tts_provider == "edge-tts" else "TxGEqnSAs9dnLURhk9Wb"
@@ -547,12 +547,13 @@ with col3:
     st.markdown('<div class="stats-card"><div class="stats-val">🚀 High Speed</div><div>Parallel Enabled</div></div>', unsafe_allow_html=True)
 
 st.divider()
+st.caption("Audio-first mode: step 1 now fetches text, generates TTS, and stitches the selected pack.")
 
 fetch_col, audio_col = st.columns(2)
 with fetch_col:
-    fetch_text = st.button("1) Fetch Text Chapters", type="primary")
+    fetch_text = st.button("1) Build Pack (Fetch + TTS)", type="primary")
 with audio_col:
-    can_generate_audio = st.session_state.current_pack is not None
+    can_generate_audio = st.session_state.current_pack is not None and not st.session_state.audio_ready
     generate_audio = st.button("2) Generate Audio", disabled=not can_generate_audio)
 
 reset_col1, reset_col2 = st.columns(2)
@@ -589,21 +590,35 @@ if fetch_text:
     _clear_ui_logs()
     try:
         update_status(f"Starting fetch text phase. mode={generation_mode}, target={st.session_state.current_target_seconds:.1f}s")
-        metadata, pack_dir = generate_video_pack(
+        metadata = run_pipeline(
             output_base_dir=output_dir,
+            tts_kwargs={
+                "api_key": api_key,
+                "voice_id": voice_id,
+                "model_id": model_id,
+                "base_url": tts_base_url,
+                "provider": tts_provider,
+                "tts_rate": tts_rate,
+                "tts_pitch": tts_pitch,
+                "lang": "en",
+                "max_words": 25,
+                "max_chars": 120,
+            },
             progress_callback=update_status,
             target_seconds=st.session_state.current_target_seconds,
-            words_per_second=max(1.0, float(wpm) / 60.0),
-                fetch_workers=_resolve_fetch_workers(generation_mode),
+            batch_size=8,
+            fetch_workers=_resolve_fetch_workers(generation_mode),
+            tts_workers=tts_max_workers,
         )
+        pack_dir = metadata["pack_dir"]
         st.session_state.current_pack = pack_dir
         st.session_state.current_metadata = metadata
-        st.session_state.audio_ready = False
+        st.session_state.audio_ready = True
         st.session_state.video_ready = False
         _append_ui_log(f"Text fetched for pack: {pack_dir}", "INFO")
-        st.success(f"✅ Text fetched for pack: {pack_dir}")
+        st.success(f"✅ Audio-first pack ready: {pack_dir}")
         st.write(f"Chapters selected: {metadata['chapters_count']}")
-        st.write(f"Estimated duration: {int(metadata['final_duration'])}s")
+        st.write(f"Actual duration: {int(metadata.get('actual_duration', metadata.get('final_duration', 0)))}s")
     except Exception as fetch_err:
         import traceback
         full_error = traceback.format_exc()
@@ -751,7 +766,8 @@ if os.path.exists(output_dir):
                 if os.path.exists(p_path):
                     with open(p_path, 'r') as f:
                         meta = json.load(f)
-                        st.write(f"Total Duration (Estimated): {int(meta['final_duration'] // 3600)}h {int((meta['final_duration'] % 3600) // 60)}m {int(meta['final_duration'] % 60)}s")
+                        total_duration = meta.get('actual_duration', meta.get('final_duration', 0))
+                        st.write(f"Total Duration (Actual): {int(total_duration // 3600)}h {int((total_duration % 3600) // 60)}m {int(total_duration % 60)}s")
                         st.write(f"Chapters: {meta['chapters_count']}")
 
                         st.markdown("#### 🎞️ Export Video (Loop + ASS Subtitle)")
